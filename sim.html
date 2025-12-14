@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>DenticleShield Simulation — Diamond Pattern (Enhanced Repulsion)</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 12px; background: #f6f8fb; color:#111; }
+  #top { display:flex; gap:12px; align-items:center; }
+  #controls { padding:10px; background:white; border-radius:8px; box-shadow:0 2px 6px rgba(20,30,50,0.08); }
+  label { display:block; margin:6px 0; font-size:13px; }
+  canvas { background: #ffffff; border-radius:8px; box-shadow: 0 6px 18px rgba(20,30,50,0.06); }
+  .btn { padding:6px 10px; border-radius:6px; border:1px solid #2b6cb0; background:#3182ce; color:white; cursor:pointer; display:inline-block; margin-right:6px; }
+  .btn.secondary { background:white; color:#3182ce; border:1px solid #cfe7ff; }
+  #legend { font-size:13px; margin-top:8px; }
+  #stats { margin-left: 18px; padding:10px; background:white; border-radius:8px; box-shadow:0 2px 6px rgba(20,30,50,0.04); width:300px; }
+  .small { font-size:12px; color:#555; }
+  #footer { margin-top:12px; font-size:13px; color:#333; }
+  .control-row { display:flex; gap:10px; align-items:center; margin-bottom:6px; }
+  input[type=range] { width:180px; }
+</style>
+</head>
+<body>
+<h2>DenticleShield — Diamond Micropattern (Enhanced Repulsion)</h2>
+<div id="top">
+  <div id="controls">
+    <div class="control-row">
+      <button id="toggleBtn" class="btn">Show: Untreated</button>
+      <button id="resetBtn" class="btn secondary">Reset</button>
+    </div>
+    <label class="small">Bacterial load: <span id="loadVal">80</span></label>
+    <input id="loadSlider" type="range" min="10" max="250" value="80"/>
+    <label class="small">Zwitterionic layer: <input id="zwit" type="checkbox" checked /></label>
+    <label class="small">Simulation speed: <input id="speed" type="range" min="0.2" max="2.5" step="0.1" value="1"/> <span id="speedVal">1.0x</span></label>
+    <div id="legend"><span style="display:inline-block;width:12px;height:12px;background:#2b6cb0;border-radius:50%;margin-right:6px;"></span> Bacteria &nbsp;&nbsp;
+    <span style="display:inline-block;width:14px;height:10px;background:#cfe1ff;margin-left:8px;border:1px solid #c0d7ff;"></span> Riblets (diamond)</div>
+  </div>
+
+  <div id="stats">
+    <div><strong>Surface:</strong> <span id="surfaceLabel">Untreated</span></div>
+    <div><strong>Attached microbes:</strong> <span id="attached">0</span></div>
+    <div><strong>Attachment % (last 200):</strong> <span id="attachPct">0%</span></div>
+    <div class="small">**Enhanced Mode:** This demonstrates maximum antifouling: Zwitterion layer is prominent, and adhesion is prevented (0% attachment).</div>
+    <div style="margin-top:10px;"><strong>Controls</strong></div>
+    <div class="small">Click canvas to add bacteria. Use toggle to compare.</div>
+  </div>
+</div>
+
+<canvas id="sim" width="960" height="420" style="display:block;margin-top:12px;"></canvas>
+
+<div id="footer">
+  <strong>Notes:</strong> This is a modified model to show maximum repulsion (0% attachment) and a more prominent zwitterionic layer visualization.
+</div>
+
+<script>
+// ENHANCED simulation for maximum repulsion and prominent zwitterion layer.
+
+const canvas = document.getElementById('sim');
+const ctx = canvas.getContext('2d');
+let W = canvas.width, H = canvas.height;
+
+let mode = "untreated"; // or 'denticle'
+const toggleBtn = document.getElementById('toggleBtn');
+const resetBtn = document.getElementById('resetBtn');
+const loadSlider = document.getElementById('loadSlider');
+const loadVal = document.getElementById('loadVal');
+const attachedLabel = document.getElementById('attached');
+const attachPctLabel = document.getElementById('attachPct');
+const surfaceLabel = document.getElementById('surfaceLabel');
+const zwitBox = document.getElementById('zwit');
+const speedSlider = document.getElementById('speed');
+const speedVal = document.getElementById('speedVal');
+
+let particles = [];
+let attachedCount = 0;
+let recentAttachments = []; // sliding window to compute attachment %
+let simSpeed = 1.0;
+
+// Surface geometry (diamond pattern)
+const surfaceTop = Math.round(H*0.68);
+const diamond = {
+  size: 18,            // half-diagonal length in px
+  spacingX: 36,        // horizontal spacing between diamond centers
+  spacingY: 20,        // vertical spacing between rows
+  height: 6            // visual height of diamond relief (for drawing)
+};
+
+// ADHESION/REPULSION PARAMS MODIFIED FOR ENHANCED REPULSION
+const params = {
+  untreatedBaseProb: 0.45,   // untreated surface base adhesion chance
+  denticleValleyProb: 0.0,   // **MODIFIED:** Valley adhesion prob set to 0%
+  denticlePeakProb: 0.0,     // **MODIFIED:** Peak adhesion prob set to 0%
+  zwitMultiplier: 0.0,       // not strictly needed with 0% base prob
+  repulsionRange: 26,        // **INCREASED:** px range above surface
+  repulsionStrength: 1.0,    // **INCREASED:** how strongly bacteria are pushed away
+  detachmentRatePerSec: 0.0  // **MODIFIED:** Detachment logic disabled as nothing attaches
+};
+
+function random(min,max){ return Math.random()*(max-min)+min; }
+
+function spawn(n){
+  for(let i=0;i<n;i++){
+    particles.push({
+      id: Math.random().toString(36).slice(2,9),
+      x: random(40, W-40),
+      y: random(10, 80),
+      r: random(2.6,4.0),
+      vx: random(-0.3,0.3),
+      vy: random(0.25,0.9),
+      stuck: false,
+      lifetime:0,
+      attachTime: null
+    });
+  }
+}
+
+function reset(){
+  particles = [];
+  attachedCount = 0;
+  recentAttachments = [];
+  spawn(parseInt(loadSlider.value));
+  updateStats();
+}
+
+function updateStats(){
+  loadVal.textContent = loadSlider.value;
+  attachedLabel.textContent = attachedCount;
+  surfaceLabel.textContent = mode === 'untreated' ? 'Untreated (smooth)' : 'DenticleShield (Diamond + Enhanced Repulsion)';
+  speedVal.textContent = simSpeed.toFixed(1) + 'x';
+  // attachment pct from last 200 interactions
+  let pct = 0;
+  if(recentAttachments.length>0){
+    const last = recentAttachments.slice(-200);
+    const pos = last.reduce((a,b)=>a+(b?1:0),0);
+    pct = Math.round((pos/last.length)*100);
+  }
+  attachPctLabel.textContent = pct + '%';
+}
+
+loadSlider.addEventListener('input', ()=>{
+  loadVal.textContent = loadSlider.value;
+  let diff = parseInt(loadSlider.value) - particles.length;
+  if(diff>0) spawn(diff);
+});
+
+speedSlider.addEventListener('input', ()=>{
+  simSpeed = parseFloat(speedSlider.value);
+  updateStats();
+});
+
+canvas.addEventListener('click', (e)=>{
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  for(let i=0;i<8;i++){
+    particles.push({id: Math.random().toString(36).slice(2,9), x: mx + random(-6,6), y: my + random(-6,6), r: random(2.6,4.2), vx: random(-0.6,0.6), vy: random(0.1,0.8), stuck:false, lifetime:0, attachTime:null});
+  }
+  loadSlider.value = Math.min(250, parseInt(loadSlider.value)+8);
+  loadVal.textContent = loadSlider.value;
+});
+
+toggleBtn.addEventListener('click', ()=>{
+  if(mode === 'untreated'){
+    mode = 'denticle';
+    toggleBtn.textContent = 'Show: DenticleShield';
+  } else {
+    mode = 'untreated';
+    toggleBtn.textContent = 'Show: Untreated';
+  }
+  updateStats();
+});
+
+resetBtn.addEventListener('click', ()=> reset());
+
+// Drawing diamonds on the surface
+function drawDiamondGrid(){
+  ctx.save();
+  ctx.translate(0, surfaceTop);
+  const size = diamond.size;
+  const sx = diamond.spacingX;
+  const sy = diamond.spacingY;
+  for(let row= -2; row < Math.ceil((H-surfaceTop)/sy)+6; row++){
+    const y = row * sy;
+    const xOffset = (row%2===0)?0:sx/2;
+    for(let x = -sx; x < W + sx; x += sx){
+      const cx = x + xOffset;
+      ctx.beginPath();
+      ctx.moveTo(cx, y - size);
+      ctx.lineTo(cx + size, y);
+      ctx.lineTo(cx, y + size);
+      ctx.lineTo(cx - size, y);
+      ctx.closePath();
+      ctx.fillStyle = '#e9f2ff';
+      ctx.fill();
+      ctx.strokeStyle = '#cfe1ff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// helper: determine whether x is near diamond peak or valley.
+function diamondLocalPosition(x){
+  const sx = diamond.spacingX;
+  const local = ((x % sx) + sx) % sx; // 0..sx
+  const center = sx/2;
+  const distanceToCenter = Math.abs(local - center);
+  return distanceToCenter; // smaller = closer to valley center
+}
+
+// adhesion decision - MODIFIED to always return false in denticle mode
+function attemptAdhesion(p){
+  let baseProb = params.untreatedBaseProb;
+  if(mode === 'denticle'){
+    // When denticle mode is active, adhesion is set to 0% in params for total repulsion.
+    const dist = diamondLocalPosition(p.x);
+    const half = diamond.spacingX/2;
+    const norm = Math.min(1, Math.max(0, dist / (half)));
+    const valleyFactor = 1 - norm; // 1 at center, 0 at edges
+    const prob = params.denticleValleyProb * valleyFactor + params.denticlePeakProb * (1-valleyFactor);
+    baseProb = prob;
+  }
+  if(zwitBox.checked){
+    baseProb *= params.zwitMultiplier;
+  }
+  baseProb = Math.max(0, Math.min(1, baseProb));
+  const adj = baseProb * (0.6 + Math.random()*0.8);
+  const stuck = Math.random() < adj;
+  recentAttachments.push(stuck ? 1 : 0);
+  if(recentAttachments.length > 1000) recentAttachments.shift();
+  return stuck;
+}
+
+// repulsion behavior (moderate): if particle enters repulsion zone, apply a smooth lateral & upward force
+function applyRepulsion(p, dt){
+  const sec = dt/60;
+  // Stronger upward push
+  p.vy -= params.repulsionStrength * 0.22 * sec * (1 + Math.random()*0.4); 
+  const centerOffset = ((p.x % diamond.spacingX) + diamond.spacingX) % diamond.spacingX - diamond.spacingX/2;
+  // Stronger lateral push
+  p.vx += (centerOffset > 0 ? 0.12 : -0.12) * sec * (0.8 + Math.random()*0.6); 
+  p.y -= Math.abs(p.vy) * 0.45 * sec;
+  p.vx *= 0.98;
+  p.vy *= 0.98;
+}
+
+function step(dt){
+  dt *= simSpeed;
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    if(p.stuck){
+      // Detachment logic is now effectively disabled due to 0.0 detachment rate in params
+      p.lifetime += dt;
+      continue;
+    }
+    p.vx += random(-0.02,0.02) * (dt/6);
+    p.vy += random(-0.01,0.02) * (dt/6);
+    p.x += p.vx * dt * 0.9;
+    p.y += p.vy * dt * 1.0;
+    p.lifetime += dt;
+    if(p.x < 6){ p.x = 6; p.vx *= -0.5; }
+    if(p.x > W-6){ p.x = W-6; p.vx *= -0.5; }
+    if(p.y + p.r >= surfaceTop - 8){
+      const distanceAbove = Math.max(0, (surfaceTop - (p.y + p.r)));
+      if(mode === 'denticle' && distanceAbove <= params.repulsionRange){
+        applyRepulsion(p, dt); // Repulsion in denticle mode
+      }
+      if(p.y + p.r >= surfaceTop - 1){
+        p.y = Math.min(p.y, surfaceTop - p.r);
+        const stuck = attemptAdhesion(p);
+        if(stuck){
+          p.stuck = true;
+          p.attachTime = Date.now();
+          attachedCount += 1;
+          p.y = surfaceTop - p.r - (mode==='denticle'? (diamond.height*0.25) : 0);
+        } else {
+          p.vy = -Math.abs(p.vy)*0.25 - 0.2;
+          p.vx += random(-0.3,0.3);
+          if(p.y > H + 20 || p.lifetime > 20000){ particles.splice(i,1); continue; }
+        }
+      }
+    }
+    if(p.lifetime > 12000 && Math.random() < 0.001*dt){
+      particles.splice(i,1);
+    }
+  }
+  if(particles.length < loadSlider.value){
+    spawn(Math.min(8, loadSlider.value - particles.length));
+  }
+}
+
+function render(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = '#f7fbff';
+  ctx.fillRect(0,0,W, surfaceTop);
+  ctx.fillStyle = '#f4f8ff';
+  ctx.fillRect(0, surfaceTop, W, H - surfaceTop);
+  if(mode === 'denticle'){
+    drawDiamondGrid();
+    if(zwitBox.checked){
+      // MODIFIED: Increased opacity for more prominent blue layer
+      ctx.fillStyle = 'rgba(120,180,255,0.18)'; 
+      ctx.fillRect(0, surfaceTop - params.repulsionRange, W, params.repulsionRange + 6);
+    }
+  } else {
+    ctx.fillStyle = '#f2f6fb';
+    ctx.fillRect(0, surfaceTop, W, H - surfaceTop);
+  }
+  for(const p of particles){
+    if(p.stuck){
+      ctx.beginPath();
+      ctx.fillStyle = '#9b2d2d';
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.fillStyle = 'rgba(155,45,45,0.06)';
+      ctx.arc(p.x, p.y, p.r+4, 0, Math.PI*2);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.fillStyle = '#2b6cb0';
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.fillStyle = 'rgba(43,108,176,0.06)';
+      ctx.ellipse(p.x - p.vx*2, p.y - p.vy*2, p.r+2, p.r+1, 0, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.font = '12px Arial';
+  ctx.fillText('Particles: ' + particles.length, 10, 18);
+  ctx.fillText('Attached: ' + attachedCount, 10, 34);
+}
+
+let last = performance.now();
+function loop(t){
+  const now = t;
+  const dt = Math.min(60, now - last) / 16.6;
+  step(dt);
+  render();
+  last = now;
+  updateStats();
+  requestAnimationFrame(loop);
+}
+
+spawn(parseInt(loadSlider.value));
+updateStats();
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
